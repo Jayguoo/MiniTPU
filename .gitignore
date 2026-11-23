@@ -1,0 +1,8 @@
+# Local simulation, synthesis, and formal output
+/sim
+/tpu.json
+/synth.txt
+/nextpnr.log
+/tpu/
+/tpu_prove_*/
+/tpu_cover_*/
