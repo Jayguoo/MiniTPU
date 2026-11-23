@@ -48,4 +48,5 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: ECP5 synth + place-and-route (N=4, RAW=1)
+        shell: bash
         run: ./run.sh synth | tee -a "$GITHUB_STEP_SUMMARY"
