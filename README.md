@@ -1,5 +1,7 @@
 # MiniTPU
 
+[![CI](https://github.com/Jayguoo/MiniTPU/actions/workflows/ci.yml/badge.svg)](https://github.com/Jayguoo/MiniTPU/actions/workflows/ci.yml)
+
 A small Verilog systolic-array accelerator for streaming INT8 matrix multiplication.
 4×4 by default (parameter `N`), with a self-checking testbench and formally verified flow control.
 
