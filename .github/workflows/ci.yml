@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  sim-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: YosysHQ/setup-oss-cad-suite@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Sim + lint (N = 1,2,3,4,8; RAW = 0,1)
+        run: |
+          for raw in 0 1; do
+            for n in 1 2 3 4 8; do
+              echo "::group::N=$n RAW=$raw"
+              N=$n RAW=$raw ./run.sh sim
+              N=$n RAW=$raw ./run.sh lint
+              echo "::endgroup::"
+            done
+          done
+
+  formal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: YosysHQ/setup-oss-cad-suite@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: SymbiYosys (prove_n2, prove_n3, cover_n2)
+        run: ./run.sh formal
+
+  synth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: YosysHQ/setup-oss-cad-suite@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: ECP5 synth + place-and-route (N=4, RAW=1)
+        run: ./run.sh synth | tee -a "$GITHUB_STEP_SUMMARY"
