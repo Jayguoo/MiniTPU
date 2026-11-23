@@ -141,7 +141,7 @@ module tpu #(
     wire [N*W-1:0] row_raw;
     wire [N-1:0]   row_v;
     wire [N*8-1:0] q8;
-    reg            s1v, s2v;                   // requantizer pipeline valids
+    reg            s1v, s2v, s3v, s4v;         // requantizer pipeline valids
     wire [W+17:0]  rnd = (q_shift == 5'd0) ? {(W+18){1'b0}}
                                            : {{(W+17){1'b0}}, 1'b1} << (q_shift - 5'd1);
 
@@ -212,13 +212,24 @@ module tpu #(
             assign row_raw[j*W +: W] = sd[N-1-j];
         end
 
-        // Requantize to int8, pipelined: multiply | round + shift | ReLU + saturate (in the FIFO register).
+        // Requantize to int8, pipelined: register x | two partial products (x low 12 bits, x high
+        // bits) | sum | round + shift | ReLU + saturate (in the FIFO register). Splitting the
+        // multiply keeps the partial-product add out of the DSP cycle.
         for (j = 0; j < N; j = j + 1) begin : quant
             wire signed [W-1:0]  x = row_raw[j*W +: W];
+            reg  signed [W-1:0]  xr;
+            reg         [27:0]   pl;               // x[11:0] * q_mult, unsigned
+            reg  signed [W+5:0]  ph;               // x[W-1:12] * q_mult, signed
             reg  signed [W+17:0] p, y;
+            wire signed [W+17:0] ph_shifted = {ph, 12'b0};
             always @(posedge clk) begin
-                if (row_v[N-1]) p <= x * $signed({1'b0, q_mult});
-                if (s1v)        y <= (p + $signed(rnd)) >>> q_shift;
+                if (row_v[N-1]) xr <= x;
+                if (s1v) begin
+                    pl <= xr[11:0] * q_mult;
+                    ph <= $signed(xr[W-1:12]) * $signed({1'b0, q_mult});
+                end
+                if (s2v)        p <= ph_shifted + $signed({{(W-10){1'b0}}, pl});
+                if (s3v)        y <= (p + $signed(rnd)) >>> q_shift;
             end
             wire signed [W+17:0] z = (q_relu && y < 0) ? 0 : y;
             assign q8[j*8 +: 8] = (z > 127) ? 8'h7f : (z < -128) ? 8'h80 : z[7:0];
@@ -233,8 +244,10 @@ module tpu #(
     always @(posedge clk) begin
         s1v <= row_v[N-1] & ~rst;
         s2v <= s1v & ~rst;
-        qv  <= s2v & ~rst;
-        if (s2v) qq <= q8;
+        s3v <= s2v & ~rst;
+        s4v <= s3v & ~rst;
+        qv  <= s4v & ~rst;
+        if (s4v) qq <= q8;
     end
 
     reg  [EW-1:0] mem [0:DEPTH-1];
@@ -260,11 +273,13 @@ module tpu #(
     assign out_q     = head[EW-1 -: N*8];
     generate
         if (RAW) begin : raw
-            reg [N*W-1:0] qraw, raw1, raw2;
+            reg [N*W-1:0] qraw, raw1, raw2, raw3, raw4;
             always @(posedge clk) begin
                 if (row_v[N-1]) raw1 <= row_raw;
                 if (s1v)        raw2 <= raw1;
-                if (s2v)        qraw <= raw2;
+                if (s2v)        raw3 <= raw2;
+                if (s3v)        raw4 <= raw3;
+                if (s4v)        qraw <= raw4;
             end
             assign entry = {qq, qraw};
             for (j = 0; j < N; j = j + 1) begin : outp
