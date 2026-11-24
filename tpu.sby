@@ -12,6 +12,7 @@ cover_n2: depth 60
 [engines]
 prove_n2: abc pdr
 prove_n3: abc pdr
+prove_n3: aiger rIC3
 cover_n2: smtbmc
 
 [script]

@@ -231,8 +231,9 @@ module tpu #(
                 if (s2v)        p <= ph_shifted + $signed({{(W-10){1'b0}}, pl});
                 if (s3v)        y <= (p + $signed(rnd)) >>> q_shift;
             end
-            wire signed [W+17:0] z = (q_relu && y < 0) ? 0 : y;
-            assign q8[j*8 +: 8] = (z > 127) ? 8'h7f : (z < -128) ? 8'h80 : z[7:0];
+            wire neg = y[W+17];
+            wire fits = neg ? (&y[W+16:7]) : !(|y[W+16:7]);
+            assign q8[j*8 +: 8] = (q_relu && neg) ? 8'h00 : fits ? y[7:0] : neg ? 8'h80 : 8'h7f;
         end
     endgenerate
 

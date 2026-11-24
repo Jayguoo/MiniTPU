@@ -65,15 +65,15 @@ N=8 RAW=0 ./run.sh sim
 
 | Metric | Value |
 |---|---|
-| fmax | 111.84 MHz (target 200 MHz) |
-| LUT4 / FF / MULT18 | 3858 / 3013 / 24 |
-| Peak | 16 MAC/cycle ≈ 1.79 GMAC/s |
+| fmax | 111.02 MHz default seed; 115.07 / 114.90 / 109.96 MHz at nextpnr seeds 1/2/3 (target 200 MHz) |
+| LUT4 / FF / MULT18 | 3729 / 3013 / 24 |
+| Peak | 16 MAC/cycle ≈ 1.78 GMAC/s at the default seed |
 | K=1 stress | 100 jobs in 415 cycles |
 
 ## Limitations
 
 - The output port limits short jobs (about 24% utilization at K=1)
-- The requantizer multiplier stage is still the critical path; the design misses the 200 MHz target
+- The design misses the 200 MHz target; the critical path varies by seed (PE input skew, requantizer DSP, rounding adder)
 - No A/B reuse, tiling or on-chip memory
 - Int8 only; the requant stage has no other NN features
 - Not yet run on hardware or connected to a host

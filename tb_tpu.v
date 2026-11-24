@@ -229,6 +229,19 @@ module tb_tpu;
         $display("N=%0d RAW=%0d streaming K=1: %0d jobs in %0d cycles -> %0.1f%% MAC utilization",
                  N, RAW, TRIALS, cycles, 100.0*TRIALS/cycles);
         repeat (10*N + 50) @(negedge clk);           // catch any extra rows after the benchmark
+
+        // -128 * 127 at K=1: cover negative saturation, a negative rounding tie, and ReLU.
+        q_mult = 1;
+        q_shift = 1;
+        q_relu = 0;
+        job(1, 1);
+        wait (rx_job == nj); @(negedge clk);
+        q_shift = 8;
+        job(1, 1);
+        wait (rx_job == nj); @(negedge clk);
+        q_relu = 1;
+        job(1, 1);
+        wait (rx_job == nj); @(negedge clk);
         $display("PASS: %0d %0dx%0d matmuls (RAW=%0d)", rx_job, N, N, RAW);
         $finish;
     end
