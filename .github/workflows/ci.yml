@@ -28,6 +28,13 @@ jobs:
             done
           done
 
+      - name: Packed sim and lint (N = 4; RAW = 0,1)
+        run: |
+          for raw in 0 1; do
+            PACKED=1 RAW=$raw ./run.sh sim
+            PACKED=1 RAW=$raw ./run.sh lint
+          done
+
   formal:
     runs-on: ubuntu-latest
     timeout-minutes: 60

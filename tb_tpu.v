@@ -4,19 +4,22 @@
 // a 1000-cycle pause inside a job, the KMAX overflow err flag, no spurious output, and K=1 throughput.
 `timescale 1ns/1ps
 module tb_tpu;
-    parameter N = 4, KMAX = 256, TRIALS = 100, RAW = 1;
+    parameter N = 4, KMAX = 256, TRIALS = 100, RAW = 1, PACKED = 0;
     localparam MEM = 1 << 21, MAXJ = 1024;
     localparam FIFO_JOBS = (1 << $clog2(6*N + 8)) / N;
+    localparam ROWS = PACKED ? 2 : 1;
+    localparam OUT_BEATS = N / ROWS;
+    localparam COLS = N * ROWS;
 
     reg clk = 0, rst = 1, in_valid = 0, in_last = 0, out_ready = 1, q_relu = 0;
     reg  [N*8-1:0]  a_col = 0, b_row = 0;
     reg  [15:0]     q_mult = 1;
     reg  [4:0]      q_shift = 0;
     wire            in_ready, out_valid, out_last, err;
-    wire [N*32-1:0] out_raw;
-    wire [N*8-1:0]  out_q;
+    wire [COLS*32-1:0] out_raw;
+    wire [COLS*8-1:0]  out_q;
 
-    tpu #(.N(N), .KMAX(KMAX), .RAW(RAW)) dut (
+    tpu #(.N(N), .KMAX(KMAX), .RAW(RAW), .PACKED(PACKED)) dut (
         .clk(clk), .rst(rst), .in_valid(in_valid), .in_ready(in_ready), .in_last(in_last),
         .a_col(a_col), .b_row(b_row), .q_mult(q_mult), .q_shift(q_shift), .q_relu(q_relu),
         .out_valid(out_valid), .out_ready(out_ready), .out_last(out_last),
@@ -26,11 +29,12 @@ module tb_tpu;
     // Job j: A[i][k] = M[off+i*K+k], B[k][c] = M[off+N*K+k*N+c]. Jobs are numbered in commit order.
     reg [7:0] M [0:MEM-1];
     integer K [0:MAXJ-1], off [0:MAXJ-1];
+    integer seed = 1;                                 // override with +seed=N
     integer nj = 0, rx_job = 0, rx_row = 0, stall = 0, bp = 100, err_ok = 0;
-    integer ph, t, kk, t0, t_end, cycles;
+    integer ph, t, kk, t0, t_end, timed_last_job, cycles;
     integer backpressure_cycles = 0;
     reg held = 0;
-    reg [N*40:0] held_row;
+    reg [COLS*40:0] held_row;
 
     always @(posedge clk) begin
         if (!rst && in_valid && !in_ready) backpressure_cycles <= backpressure_cycles + 1;
@@ -40,7 +44,7 @@ module tb_tpu;
         if (out_valid && !out_ready) held_row <= {out_last, out_raw, out_q};
     end
 
-    always @(posedge clk) out_ready <= ($urandom % 100) < bp;
+    always @(posedge clk) out_ready <= ($urandom(seed) % 100) < bp;
 
     task gen(input integer k, input integer mode);   // mode 1: 127 * -128, mode 2: -128 * -128
         integer x;
@@ -48,7 +52,7 @@ module tb_tpu;
             K[nj]   = k;
             off[nj] = (nj == 0) ? 0 : off[nj-1] + 2*N*K[nj-1];
             for (x = 0; x < 2*N*k; x = x + 1)
-                M[off[nj] + x] = (mode == 0) ? $urandom : (mode == 1 && x < N*k) ? 8'h7f : 8'h80;
+                M[off[nj] + x] = (mode == 0) ? $urandom(seed) : (mode == 1 && x < N*k) ? 8'h7f : 8'h80;
         end
     endtask
 
@@ -56,7 +60,7 @@ module tb_tpu;
         integer k, i;
         begin
             for (k = k0; k < k1; k = k + 1) begin
-                while (($urandom % 100) < stall) begin in_valid = 0; @(negedge clk); end
+                while (($urandom(seed) % 100) < stall) begin in_valid = 0; @(negedge clk); end
                 in_valid = 1;
                 in_last  = (k == K[nj] - 1);
                 for (i = 0; i < N; i = i + 1) begin
@@ -104,55 +108,80 @@ module tb_tpu;
     endfunction
 
     // Everything is stable on the falling edge; a pop happens on the next rising edge.
-    integer c;
+    integer c, r;
     reg signed [63:0] ev;
     always @(negedge clk) if (!rst) begin
         if (out_valid === 1'bx || err === 1'bx) $fatal(1, "X on out_valid/err");
         if (err === 1'b1 && !err_ok)            $fatal(1, "unexpected err");
         if (out_valid && out_ready) begin
-            if (rx_job >= nj) $fatal(1, "spurious output row at %0t", $time);
-            if (out_last !== (rx_row == N-1))
-                $fatal(1, "job %0d row %0d: out_last=%b", rx_job, rx_row, out_last);
-            if (!RAW && out_raw !== {N*32{1'b0}})
-                $fatal(1, "RAW=0 job %0d row %0d: expected zero out_raw, got %h", rx_job, rx_row, out_raw);
-            for (c = 0; c < N; c = c + 1) begin
-                ev = cref(rx_job, rx_row, c);
+            if (rx_job >= nj) $fatal(1, "spurious output beat at %0t", $time);
+            if (out_last !== (rx_row == OUT_BEATS-1))
+                $fatal(1, "job %0d beat %0d: out_last=%b", rx_job, rx_row, out_last);
+            if (!RAW && out_raw !== {COLS*32{1'b0}})
+                $fatal(1, "RAW=0 job %0d beat %0d: expected zero out_raw, got %h", rx_job, rx_row, out_raw);
+            for (c = 0; c < COLS; c = c + 1) begin
+                r = rx_row + (c/N)*OUT_BEATS;
+                ev = cref(rx_job, r, c%N);
                 if (out_q[c*8 +: 8] !== qref(ev))
                     $fatal(1, "out_q mismatch job %0d C[%0d][%0d]: got %0d, expected %0d",
-                           rx_job, rx_row, c, $signed(out_q[c*8 +: 8]), $signed(qref(ev)));
+                           rx_job, r, c%N, $signed(out_q[c*8 +: 8]), $signed(qref(ev)));
                 if (RAW && $signed(out_raw[c*32 +: 32]) !== ev)
                     $fatal(1, "out_raw mismatch job %0d C[%0d][%0d]: got %0d, expected %0d",
-                           rx_job, rx_row, c, $signed(out_raw[c*32 +: 32]), ev);
+                           rx_job, r, c%N, $signed(out_raw[c*32 +: 32]), ev);
             end
             rx_row = rx_row + 1;
-            if (rx_row == N) begin
+            if (rx_row == OUT_BEATS) begin
                 rx_row = 0;
                 rx_job = rx_job + 1;
-                if (rx_job == TRIALS) t_end = $time;
+                if (rx_job == timed_last_job) t_end = $time;
             end
         end
     end
 
     initial begin
+        if ($value$plusargs("seed=%d", seed)) $display("seed=%0d", seed);
         repeat (3) @(negedge clk);
         rst = 0;
 
+        if (PACKED) begin
+            // Distinct, unsaturated signed results in every row; catches swapped beats/lanes.
+            gen(1, 0);
+            {M[off[nj]+0], M[off[nj]+1], M[off[nj]+2], M[off[nj]+3]} = 32'h02fd05f9;
+            {M[off[nj]+4], M[off[nj]+5], M[off[nj]+6], M[off[nj]+7]} = 32'hfc03fe01;
+            bp = 0;
+            beats(0, 1); nj = nj + 1;
+            wait (out_valid);
+            repeat (5) @(negedge clk);
+            bp = 100;
+            wait (rx_job == nj); @(negedge clk);
+
+            bp = 0;
+            @(negedge clk);
+            job(1, 0);
+            wait (out_valid); @(negedge clk);
+            reset_tpu;
+            nj = rx_job; rx_row = 0;
+            bp = 100;
+            repeat (4*N + 8) @(negedge clk);
+        end
+
         // Phase 0: full-rate stream, K = N.
         t0 = $time;
+        timed_last_job = nj + TRIALS;
         for (t = 0; t < TRIALS; t = t + 1) job(N, t == 0);
         wait (rx_job == nj); @(negedge clk);
         cycles = (t_end - t0) / 10;
 
         // Phases 1-4: variable K, stalls, backpressure, requantization.
         for (ph = 1; ph <= 4; ph = ph + 1) begin
-            q_mult  = (ph == 1) ? 16'd1 : $urandom;
-            q_shift = (ph == 1) ? 5'd0  : (ph == 4) ? 5'd31 : 8 + $urandom % 16;
+            q_mult  = (ph == 1) ? 16'd1 : $urandom(seed);
+            q_shift = (ph == 1) ? 5'd0  : (ph == 4) ? 5'd31 : 8 + $urandom(seed) % 16;
             q_relu  = ph[0];
             stall   = 25;
             bp      = (ph % 2) ? 50 : 90;
             job(KMAX, (ph == 1) ? 2 : (ph == 2) ? 1 : 0);
             for (t = 0; t < TRIALS/2; t = t + 1) begin
-                kk = ($urandom % 10 == 0) ? 1 + $urandom % KMAX : 1 + $urandom % (3*N);
+                kk = ($urandom(seed) % 10 == 0) ? 1 + $urandom(seed) % KMAX : 1 + $urandom(seed) % (3*N);
                 job(kk, 0);
             end
             wait (rx_job == nj && !out_valid); @(negedge clk);
@@ -162,7 +191,7 @@ module tb_tpu;
         bp    = 0;
         @(negedge clk);
 
-        // Fill all job slots with the output stopped, then release one row at a time.
+        // Fill all job slots with the output stopped, then release one output beat at a time.
         for (t = 0; t < FIFO_JOBS; t = t + 1) job(N, 0);
         gen(1, 0);
         in_valid = 1;
@@ -177,11 +206,11 @@ module tb_tpu;
         end
         @(negedge clk);
         bp = 100;
-        for (t = 0; t < N; t = t + 1) begin
+        for (t = 0; t < OUT_BEATS; t = t + 1) begin
             @(posedge clk);
             while (!out_ready) @(posedge clk);
             if (out_valid !== 1'b1 || in_ready !== 1'b0)
-                $fatal(1, "credit returned before the final row was consumed (row %0d)", t);
+                $fatal(1, "credit returned before the final beat was consumed (beat %0d)", t);
         end
         @(posedge clk);
         if (in_ready !== 1'b1) $fatal(1, "credit not returned after the final row");
@@ -226,8 +255,10 @@ module tb_tpu;
         for (t = 0; t < TRIALS; t = t + 1) job(1, 0);
         wait (rx_job == nj); @(negedge clk);
         cycles = ($time - t0) / 10;
-        $display("N=%0d RAW=%0d streaming K=1: %0d jobs in %0d cycles -> %0.1f%% MAC utilization",
-                 N, RAW, TRIALS, cycles, 100.0*TRIALS/cycles);
+        if (PACKED && cycles > 2*TRIALS + 6*N + 8)   // 2 cycles/job plus pipeline fill
+            $fatal(1, "packed K=1 did not sustain one job every two cycles: %0d cycles", cycles);
+        $display("N=%0d RAW=%0d PACKED=%0d streaming K=1: %0d jobs in %0d cycles -> %0.1f%% MAC utilization",
+                 N, RAW, PACKED, TRIALS, cycles, 100.0*TRIALS/cycles);
         repeat (10*N + 50) @(negedge clk);           // catch any extra rows after the benchmark
         $display("PASS: %0d %0dx%0d matmuls (RAW=%0d)", rx_job, N, N, RAW);
         $finish;

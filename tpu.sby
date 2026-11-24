@@ -2,23 +2,27 @@
 prove_n2
 prove_n3
 cover_n2
+prove_p4
 
 [options]
 prove_n2: mode prove
 prove_n3: mode prove
 cover_n2: mode cover
 cover_n2: depth 60
+prove_p4: mode prove
 
 [engines]
 prove_n2: abc pdr
 prove_n3: abc pdr
 cover_n2: smtbmc
+prove_p4: abc pdr
 
 [script]
 read -formal tpu.v
 prove_n2: chparam -set N 2 -set KMAX 4 tpu
 prove_n3: chparam -set N 3 -set KMAX 4 tpu
 cover_n2: chparam -set N 2 -set KMAX 4 tpu
+prove_p4: chparam -set N 4 -set KMAX 4 -set PACKED 1 tpu
 prep -top tpu
 
 [files]
