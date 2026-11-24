@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build + run the testbench. Prefers oss-cad-suite in ~/.local, else system iverilog, else ~/.local/iv.
 #   ./run.sh          simulate (Icarus)
+#   ./run.sh reuse    simulate the opt-in N=4 B-cache wrapper
 #   ./run.sh lint     Verilator lint
 #   ./run.sh synth    Yosys synthesis for ECP5 + nextpnr timing
 #   ./run.sh formal   SymbiYosys proof of the overflow/collision asserts
@@ -14,13 +15,20 @@ RAW=${RAW-1}
 if [[ ! $N =~ ^[1-9][0-9]*$ ]]; then echo "N must be a positive integer" >&2; exit 2; fi
 if [[ $RAW != 0 && $RAW != 1 ]]; then echo "RAW must be 0 or 1" >&2; exit 2; fi
 case "${1:-sim}" in
-  sim)
-    params=(-Ptb_tpu.N="$N" -Ptb_tpu.RAW="$RAW")
+  sim|reuse)
+    if [[ ${1:-sim} == reuse ]]; then
+        if [[ $N != 4 ]]; then echo "reuse requires N=4" >&2; exit 2; fi
+        params=(-Ptb_tpu_b_cache.RAW="$RAW" -s tb_tpu_b_cache)
+        sources=(tb_tpu_b_cache.v tpu_b_cache.v tpu.v)
+    else
+        params=(-Ptb_tpu.N="$N" -Ptb_tpu.RAW="$RAW")
+        sources=(tb_tpu.v tpu.v)
+    fi
     if command -v iverilog >/dev/null; then
-        iverilog -Wall "${params[@]}" -o sim tb_tpu.v tpu.v && vvp -n sim
+        iverilog -Wall "${params[@]}" -o sim "${sources[@]}" && vvp -n sim
     else
         IV=~/.local/iv/root; LIB=$IV/usr/lib/x86_64-linux-gnu/ivl
-        "$IV/usr/bin/iverilog" -B "$LIB" -Wall "${params[@]}" -o sim tb_tpu.v tpu.v && "$IV/usr/bin/vvp" -n -M "$LIB" sim
+        "$IV/usr/bin/iverilog" -B "$LIB" -Wall "${params[@]}" -o sim "${sources[@]}" && "$IV/usr/bin/vvp" -n -M "$LIB" sim
     fi ;;
   lint)
     verilator --lint-only -Wall -Wno-DECLFILENAME -GN="$N" -GRAW="$RAW" --top-module tpu tpu.v && echo "lint clean" ;;
